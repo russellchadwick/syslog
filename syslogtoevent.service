@@ -1,0 +1,10 @@
+[Unit]
+Description=syslogtoevent
+
+[Service]
+ExecStart=/home/pi/go/bin/syslogtoevent -syslog-address 0.0.0.0:20514
+WorkingDirectory=/home/pi/go/bin
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

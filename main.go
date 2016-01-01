@@ -1,22 +1,25 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/jeromer/syslogparser"
 	"github.com/rcrowley/go-metrics"
 	"github.com/russellchadwick/event"
-	"github.com/russellchadwick/eventsource"
+	"github.com/russellchadwick/messagebroker"
 	"gopkg.in/mcuadros/go-syslog.v2"
 )
 
 var (
-	syslogAddress    = flag.String("syslog-address", "0.0.0.0:514", "address to listen for remote syslog")
-	connectionString = flag.String("connection-string", "dbname=event user=event password=event", "connecting string for database to store events")
+	syslogAddress = flag.String("syslog-address", "0.0.0.0:514", "address to listen for remote syslog")
+	dbHost        = flag.String("db-host", "localhost", "host for postgres database")
+	dbDatabase    = flag.String("db-database", "messagebroker", "database name for postgres database")
+	dbUser        = flag.String("db-user", "messagebroker", "user for postgres database")
+	dbPassword    = flag.String("db-password", "messagebroker", "password for postgres database")
 )
 
 func main() {
@@ -31,23 +34,29 @@ func main() {
 	server.SetHandler(handler)
 	err := server.ListenUDP(*syslogAddress)
 	if err != nil {
-		log.Fatalf("error listening on syslog address: %s \n", err)
+		log.Fatalln("error listening on syslog address: ", err)
 	}
 	err = server.Boot()
 	if err != nil {
-		log.Fatalf("error starting syslog server: %s \n", err)
+		log.Fatalln("error starting syslog server: ", err)
 	}
 	defer server.Kill()
 
 	meter := metrics.NewMeter()
 	err = metrics.Register("incoming_message_meter", meter)
 	if err != nil {
-		log.Fatalf("error creating metric: %s \n", err)
+		log.Fatalln("error creating metric: ", err)
 	}
 
-	eventStore, err := eventsource.NewPostgresqlEventStore(*connectionString)
+	config := messagebroker.PostgresqlConnectionConfig{
+		Host:     *dbHost,
+		Database: *dbDatabase,
+		User:     *dbUser,
+		Password: *dbPassword,
+	}
+	messageBroker, err := messagebroker.NewPostgresqlMessageBroker(&config)
 	if err != nil {
-		log.Fatalf("error creating event source: %s \n", err)
+		log.Fatalln("error creating message broker: ", err)
 	}
 
 	go func(channel syslog.LogPartsChannel) {
@@ -55,12 +64,16 @@ func main() {
 
 			syslogEvent := convertLogPartsToSyslogEvent(logParts)
 
-			id, err := eventStore.Send("Syslog.1", syslogEvent)
+			syslogEventBytes, err := json.Marshal(syslogEvent)
 			if err != nil {
-				log.Fatalf("error sending event: %s \n", err)
+				log.Println("error marshaling event: ", err)
 			}
 
-			fmt.Println(id)
+			err = messageBroker.Publish("Syslog.1", syslogEventBytes)
+			if err != nil {
+				log.Fatalln("error sending event: ", err)
+			}
+
 			fmt.Println(logParts)
 
 			meter.Mark(1)
@@ -74,7 +87,7 @@ func main() {
 
 }
 
-func convertLogPartsToSyslogEvent(logParts syslogparser.LogParts) *event.SyslogV1 {
+func convertLogPartsToSyslogEvent(logParts map[string]interface{}) *event.SyslogV1 {
 
 	client, ok := logParts["client"].(string)
 	if !ok {
